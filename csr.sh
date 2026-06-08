@@ -103,7 +103,7 @@ __list() {
       "$(_truncate "$title" 38)" "$([ -n "$note" ] && printf '· %s' "$note")")"
     # cwd is for display only here (resume re-reads it from the store by id);
     # _clean guarantees the row stays single-line and tab-delimited.
-    printf '%s\t%s\t%s\t%s\n' "$epoch" "$sid" "$(printf '%s' "$cwd" | _clean)" "$disp"
+    printf '%s\t%s\t%s\t%s\n' "$epoch" "$(printf '%s' "$sid" | _clean)" "$(printf '%s' "$cwd" | _clean)" "$disp"
   done < "$STORE" | sort -t$'\t' -k1,1 -rn
 }
 
@@ -145,8 +145,15 @@ __remove() {
   local sid="$1" tmp
   [ -f "$STORE" ] || return 0
   tmp="$(mktemp)"
-  jq -c "select(.sessionId != \"$sid\")" "$STORE" > "$tmp" 2>/dev/null || true
-  mv "$tmp" "$STORE"
+  # --arg keeps sid as data (never jq source); guard the mv so a jq failure
+  # can't overwrite the store with an empty/partial file.
+  if jq -c --arg s "$sid" 'select(.sessionId != $s)' "$STORE" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$STORE"
+  else
+    rm -f "$tmp"
+    echo "csr: removal failed; store left unchanged." >&2
+    return 1
+  fi
 }
 
 # --- save the current session -----------------------------------------------
@@ -159,10 +166,19 @@ cmd_save() {
   fi
   savedAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   tmp="$(mktemp)"
-  [ -f "$STORE" ] && jq -c "select(.sessionId != \"$sid\")" "$STORE" > "$tmp" 2>/dev/null || true
-  jq -nc --arg s "$sid" --arg c "$cwd" --arg n "$note" --arg t "$savedAt" \
-    '{sessionId:$s, cwd:$c, note:$n, savedAt:$t}' >> "$tmp"
-  mv "$tmp" "$STORE"
+  # de-dupe existing entries (--arg keeps sid as data). Abort on read failure so
+  # a malformed store is never silently replaced by just the new entry.
+  if [ -f "$STORE" ] && ! jq -c --arg s "$sid" 'select(.sessionId != $s)' "$STORE" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    echo "csr: could not read existing store; aborting to avoid data loss." >&2
+    return 1
+  fi
+  if jq -nc --arg s "$sid" --arg c "$cwd" --arg n "$note" --arg t "$savedAt" \
+       '{sessionId:$s, cwd:$c, note:$n, savedAt:$t}' >> "$tmp"; then
+    mv "$tmp" "$STORE"
+  else
+    rm -f "$tmp"; echo "csr: save failed; store left unchanged." >&2; return 1
+  fi
   echo "csr: saved $(basename "$cwd")  ($sid)${note:+  — $note}"
 }
 
