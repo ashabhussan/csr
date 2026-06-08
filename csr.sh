@@ -67,6 +67,17 @@ _truncate() { # text width
   if [ "${#s}" -gt "$w" ]; then printf '%s…' "${s:0:$((w-1))}"; else printf '%s' "$s"; fi
 }
 
+# collapse tab/newline/CR to spaces and drop all other control bytes (incl. ESC),
+# so untrusted fields can't add fzf rows, shift columns, or emit terminal escapes.
+# multibyte UTF-8 (e.g. … ⚠) is preserved: its bytes are >=0x80, outside [:cntrl:].
+_clean() { LC_ALL=C tr '\t\r\n' '   ' | LC_ALL=C tr -d '[:cntrl:]'; }
+
+# like _clean but keeps newlines (for multi-line preview text that gets folded)
+_clean_multiline() { LC_ALL=C tr '\t\r' '  ' | LC_ALL=C tr -d '\000-\011\013-\037\177'; }
+
+# POSIX single-quote a string for safe embedding in an fzf shell template
+_shquote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
 # --- build the fzf list (tab-separated; only DISPLAY field is shown) --------
 # fields: epoch \t sessionId \t cwd \t DISPLAY
 __list() {
@@ -76,21 +87,23 @@ __list() {
     [ -z "$line" ] && continue
     sid="$(printf '%s' "$line"  | jq -r '.sessionId')"
     cwd="$(printf '%s' "$line"  | jq -r '.cwd')"
-    note="$(printf '%s' "$line" | jq -r '.note // ""')"
-    repo="$(basename "$cwd")"
+    note="$(printf '%s' "$line" | jq -r '.note // ""' | _clean)"
+    repo="$(basename "$cwd" | _clean)"
     tf="$(_transcript "$sid")"
     if [ -n "$tf" ] && [ -f "$tf" ]; then
       epoch="$(stat -f %m "$tf" 2>/dev/null || echo 0)"
       rel="$(_reltime "$epoch")"
-      branch="$(_branch "$tf")"; [ -z "$branch" ] && branch="-"
-      title="$(_title "$tf")"
+      branch="$(_branch "$tf" | _clean)"; [ -z "$branch" ] && branch="-"
+      title="$(_title "$tf" | _clean)"
     else
       epoch=0; rel="⚠"; branch="-"; title="(missing transcript)"
     fi
     disp="$(printf '%4s  %-16s %-14s %-38s %s' \
       "$rel" "$(_truncate "$repo" 16)" "$(_truncate "$branch" 14)" \
       "$(_truncate "$title" 38)" "$([ -n "$note" ] && printf '· %s' "$note")")"
-    printf '%s\t%s\t%s\t%s\n' "$epoch" "$sid" "$cwd" "$disp"
+    # cwd is for display only here (resume re-reads it from the store by id);
+    # _clean guarantees the row stays single-line and tab-delimited.
+    printf '%s\t%s\t%s\t%s\n' "$epoch" "$sid" "$(printf '%s' "$cwd" | _clean)" "$disp"
   done < "$STORE" | sort -t$'\t' -k1,1 -rn
 }
 
@@ -98,22 +111,24 @@ __list() {
 __preview() {
   local sid="$1" cwd="${2:-}" tf
   tf="$(_transcript "$sid")"
-  echo "session : $sid"
-  echo "cwd     : $cwd"
+  # all fields below are sanitized before display: the preview pane processes
+  # ANSI/escape sequences, and transcript/note text is untrusted.
+  echo "session : $(printf '%s' "$sid" | _clean)"
+  echo "cwd     : $(printf '%s' "$cwd" | _clean)"
   if [ -n "$tf" ] && [ -f "$tf" ]; then
-    echo "branch  : $(_branch "$tf")"
-    echo "title   : $(_title "$tf")"
+    echo "branch  : $(_branch "$tf" | _clean)"
+    echo "title   : $(_title "$tf" | _clean)"
     echo "updated : $(date -r "$(stat -f %m "$tf")" '+%Y-%m-%d %H:%M')"
   else
     echo "status  : ⚠ transcript not found (session may have been deleted)"
   fi
   if [ -f "$STORE" ]; then
     local note
-    note="$(grep -F "\"sessionId\":\"$sid\"" "$STORE" 2>/dev/null | tail -1 | jq -r '.note // ""' 2>/dev/null || true)"
+    note="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .note // ""' "$STORE" 2>/dev/null | tail -1 | _clean || true)"
     [ -n "$note" ] && { echo; echo "note    : $note"; }
   fi
   echo
-  echo "resume  : cd '$cwd' && claude --resume '$sid'"
+  echo "resume  : cd '$(printf '%s' "$cwd" | _clean)' && claude --resume '$(printf '%s' "$sid" | _clean)'"
   if [ -n "$tf" ] && [ -f "$tf" ]; then
     echo
     echo "── first prompt ─────────────────────────────"
@@ -121,7 +136,7 @@ __preview() {
       (.message.content) as $c
       | if ($c|type)=="string" then $c
         elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
-        else "" end // ""' 2>/dev/null | fold -s -w 56 | head -12 || true
+        else "" end // ""' 2>/dev/null | _clean_multiline | fold -s -w 56 | head -12 || true
   fi
 }
 
@@ -160,19 +175,22 @@ cmd_pick() {
     echo "     Inside a Claude session, run:  !csr save \"a short note\""
     return 0
   fi
-  local self line sid cwd tf
+  local self selfq line sid cwd tf
   self="$(command -v csr || echo "$SCRIPT_DIR/csr.sh")"
+  selfq="$(_shquote "$self")"   # safe even if the install path has spaces/metachars
   line="$( __list | fzf \
       --delimiter=$'\t' --with-nth=4 --nth=4 \
       --no-hscroll --reverse --height=90% \
       --header='enter: resume   ctrl-d: remove   esc: quit' \
-      --preview="$self __preview {2} {3}" \
+      --preview="$selfq __preview {2} {3}" \
       --preview-window='down,45%,wrap' \
-      --bind="ctrl-d:execute-silent($self __remove {2})+reload($self __list)" \
+      --bind="ctrl-d:execute-silent($selfq __remove {2})+reload($selfq __list)" \
   )" || return 0
   [ -z "$line" ] && return 0
   sid="$(printf '%s' "$line" | cut -f2)"
-  cwd="$(printf '%s' "$line" | cut -f3)"
+  # re-read cwd from the store by id (not the display field) so resume always
+  # uses the exact saved path, regardless of display sanitization.
+  cwd="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .cwd' "$STORE" 2>/dev/null | tail -1)"
   tf="$(_transcript "$sid")"
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
     echo "csr: transcript for $sid not found — cannot resume. (Remove it with Ctrl-D.)" >&2
