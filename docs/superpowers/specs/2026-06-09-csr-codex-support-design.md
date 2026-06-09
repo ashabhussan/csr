@@ -24,7 +24,10 @@ are: `!csr save` from inside the session.
 
 ## Key facts about Codex (verified against this machine)
 
-Codex CLI `0.137.0`, installed at `~/.nvm/.../@openai/codex`.
+Codex CLI `0.138.0`, installed at `~/.nvm/.../@openai/codex`. (Note: a transcript's
+`session_meta.payload.cli_version` records the version that *started* that session, so
+older rollouts can show an earlier value — e.g. `0.137.0` — even after the binary is
+updated. Do not treat it as the installed version.)
 
 - **Session storage:** `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl`
   (date-partitioned; `rollout-` prefix; the trailing `<uuid>` is the session id).
@@ -118,25 +121,39 @@ none is found. Apply the same `_clean`/truncation already used for Claude titles
 - `_transcript sid tool` — dispatch the `find` pattern/root on `tool`.
 - `_branch tf tool`, `_title tf tool` — dispatch the parser on `tool`.
 - A small `_resume_cmd tool` (or inline `case`) producing the exec line.
-- `__list` / `__preview` read `tool` per row (`.tool // "claude"`) and pass it down.
-- The existing `_clean`, `_truncate`, `_reltime`, sort, `__remove`, and fzf wiring are
-  unchanged.
+- **Where `tool` comes from at each site (no row-schema change):**
+  - `__list` already reads each store line with `jq`; add `.tool // "claude"` there to
+    render the tag column and to call the tool-aware `_transcript`/`_branch`/`_title`.
+  - `__preview` and the resume step look `tool` up **from the store by `sessionId`**,
+    exactly the way `__preview` already re-reads `note` (csr.sh:127) and the resume step
+    already re-reads `cwd` (csr.sh:209). They do **not** receive `tool` through the fzf
+    row.
+- **Therefore the tab-separated row stays `epoch \t sessionId \t cwd \t DISPLAY`** and the
+  fzf wiring (`--with-nth=4 --nth=4`, preview `{2} {3}`, `cut -f2`, ctrl-d `{2}`) is
+  unchanged. Do **not** insert `tool` as a hidden row field — doing so would shift the
+  positional placeholders and break preview/resume.
+- The existing `_clean`, `_truncate`, `_reltime`, sort, and `__remove` are unchanged.
 
 ## Unified picker
 
 One list, recency-sorted (existing behavior), with a new fixed-width **tool tag** column
-between the relative-time and repo columns: `cc` for Claude, `cx` for Codex. Because the
-tag text contains "cc"/"cx" and the row remains fuzzy-searchable, typing `cx` or `codex`
-narrows to Codex rows.
+between the relative-time and repo columns. The tag spells the tool in full — `claude` /
+`codex` — padded to a fixed width, rather than a `cc`/`cx` abbreviation.
+
+Rationale: fzf is configured with `--with-nth=4 --nth=4`, so **search is restricted to
+the visible DISPLAY field only** — hidden fields are not searched. The tag is part of the
+DISPLAY field, so spelling it `codex`/`claude` makes typing `codex` (or `claude`) actually
+narrow the list. A `cx`/`cc` abbreviation would only match `cx`/`cc`, not `codex`/`claude`.
 
 ```
-12m  cx  csr        main    Add codex support       · wip
- 1h  cc  csa-api    dev     Refactor auth flow
- 3h  cc  dorik-ui   feat/x  Fix modal z-index
+12m  codex   csr        main    Add codex support       · wip
+ 1h  claude  csa-api    dev     Refactor auth flow
+ 3h  claude  dorik-ui   feat/x  Fix modal z-index
 ```
 
 Sanitization is unchanged: the tag is derived from the trusted `tool` field, all other
-columns still pass through `_clean`.
+columns still pass through `_clean`. The `printf` width spec for `disp` gains one
+fixed-width column for the tag (e.g. `%-7s`).
 
 ### Preview pane
 
@@ -195,7 +212,35 @@ This is wording-only; no behavior change.
 
 ## Testing
 
-Manual, on real data (the tool is a thin shell wrapper over local files):
+### One automated fixture test (new)
+
+The highest-risk logic is the parsers (hidden-field ordering, legacy `.tool // "claude"`
+default, and Codex title extraction skipping `<environment_context>`). Add a single small
+test script — `test/run.sh` plus synthetic fixtures under `test/fixtures/` — that sources
+`csr.sh`'s pure functions and asserts on their output. No framework; plain `bash` with a
+trivial `assert_eq`. It must cover:
+
+- A synthetic **Codex** rollout (`session_meta` line 1 with `payload.cwd` / `git.branch`,
+  then a `developer` wrapper, a `<environment_context>` user message, then the real first
+  user prompt): `_title … codex` returns the real prompt, **not** the wrapper; `_branch`
+  and the cwd parse from line 1.
+- A synthetic **Claude** transcript: `_title`/`_branch` unchanged from current behavior.
+- A store with a **legacy line lacking `tool`**: it is treated as `claude` (`.tool //
+  "claude"`) by `__list` and the resume lookup.
+- `__list` output for a mixed store: row stays `epoch \t sid \t cwd \t DISPLAY` (4
+  tab-fields) and DISPLAY contains the full-word tag.
+
+Fixtures use fake session ids and a `PROJECTS_DIR`/`~/.codex` override (or a temp HOME) so
+the test does not depend on real local sessions.
+
+To make the functions sourceable, guard the bottom-of-file call so `main` runs only when
+the script is executed, not when sourced:
+`[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"` (replacing the bare `main "$@"`). The
+Codex/Claude transcript roots (`PROJECTS_DIR`, and the new `~/.codex/sessions` root)
+should be overridable via env vars defaulting to the current paths, so the test can point
+them at `test/fixtures/`.
+
+### Manual, on real data (the tool is a thin shell wrapper over local files):
 
 1. **Backward compat:** existing Claude entries (no `tool`) still list, preview, and
    resume; new Claude saves still work via `!csr save` (env var path unchanged).
