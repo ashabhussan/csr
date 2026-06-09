@@ -4,7 +4,7 @@
 # A curated, terminal bookmark list for Claude Code sessions.
 #
 #   csr            pick a saved session and resume it (fzf; Ctrl-D removes)
-#   csr save [note]  save the CURRENT session  (run inside Claude as: !csr save "note")
+#   csr save [optional note]  save the CURRENT session (run inside Claude/Codex as: !csr save "note")
 #
 # Store lives next to this script as csr-sessions.jsonl (one JSON object per line).
 # See docs/superpowers/specs/2026-06-08-csr-claude-session-resume-design.md
@@ -240,7 +240,7 @@ cmd_pick() {
   _need jq  "brew install jq"  || return 1
   if [ ! -s "$STORE" ]; then
     echo "csr: no saved sessions yet."
-    echo "     Inside a Claude session, run:  !csr save \"a short note\""
+    echo "     Inside a Claude or Codex session, run:  !csr save \"an optional short note\""
     return 0
   fi
   local self selfq line sid cwd tf tool

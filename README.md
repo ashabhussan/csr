@@ -22,12 +22,17 @@ the store always stays next to `csr.sh`.
 
 ## Usage
 
-**Save the current session** (run *inside* a Claude Code session, so it can read
-`CLAUDE_CODE_SESSION_ID`):
+**Save the current session** — run *inside* a Claude Code **or** Codex session via the
+`!` shell escape. `csr` auto-detects which tool you are in (`CLAUDE_CODE_SESSION_ID` for
+Claude, `CODEX_THREAD_ID` for Codex). The note is **optional**:
 
 ```
-!csr save "short note about what this session is"
+!csr save                                  # no note
+!csr save "short note about this session"  # with a note
 ```
+
+Run in a plain terminal where neither variable is set and `csr save` errors without
+writing anything.
 
 **Resume** (in a normal terminal):
 
@@ -45,7 +50,8 @@ csr
 ## How it works
 
 - The curated store is `csr-sessions.jsonl` — one JSON line per saved session:
-  `{sessionId, cwd, note, savedAt}`.
+  `{tool, sessionId, cwd, note, savedAt}` (`tool` is `claude` or `codex`; lines without
+  it are treated as `claude`).
 - Display metadata (title, branch, last-activity) is **read live** from each session's
   transcript under `~/.claude/projects/`, so titles stay current and the store stays tiny.
 - Transcripts are located by session id (not by encoded path), so renaming a project
