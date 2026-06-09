@@ -28,8 +28,11 @@ _need() { command -v "$1" >/dev/null 2>&1 || { echo "csr: missing dependency '$1
 
 # --- find a session transcript by id (encoding-independent) -----------------
 _transcript() {
-  local sid="$1"
-  find "$PROJECTS_DIR" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -1
+  local sid="$1" tool="${2:-claude}"
+  case "$tool" in
+    codex) find "$CODEX_DIR"    -maxdepth 4 -name "rollout-*-$sid.jsonl" 2>/dev/null | head -1 ;;
+    *)     find "$PROJECTS_DIR" -maxdepth 2 -name "$sid.jsonl"           2>/dev/null | head -1 ;;
+  esac
 }
 
 # --- human-friendly relative time from an epoch -----------------------------

@@ -26,5 +26,16 @@ assert_eq() { # label expected actual
 assert_eq "_truncate keeps short strings" "abc" "$(_truncate "abc" 16)"
 assert_eq "_truncate truncates long strings" "abcde…" "$(_truncate "abcdefghij" 6)"
 
+CODEX_SID="aaaaaaaa-0000-7000-8000-000000000001"
+CLAUDE_SID="bbbbbbbb-0000-4000-8000-000000000002"
+
+assert_eq "_transcript locates codex rollout by uuid suffix" \
+  "$CSR_CODEX_DIR/2026/06/09/rollout-2026-06-09T00-00-00-$CODEX_SID.jsonl" \
+  "$(_transcript "$CODEX_SID" codex)"
+
+assert_eq "_transcript locates claude transcript by id" \
+  "$CSR_CLAUDE_DIR/-tmp-proj/$CLAUDE_SID.jsonl" \
+  "$(_transcript "$CLAUDE_SID" claude)"
+
 echo
 if [ "$_fails" -eq 0 ]; then echo "ALL PASS"; else echo "$_fails FAILED"; exit 1; fi
