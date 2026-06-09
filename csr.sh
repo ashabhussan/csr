@@ -183,12 +183,25 @@ __remove() {
   fi
 }
 
-# --- save the current session -----------------------------------------------
+# --- save the current session (auto-detects Claude vs Codex from env) -------
 cmd_save() {
   _need jq "brew install jq" || return 1
-  local sid="${CLAUDE_CODE_SESSION_ID:-}" cwd="$PWD" note="$*" savedAt tmp
-  if [ -z "$sid" ]; then
-    echo "csr: CLAUDE_CODE_SESSION_ID is not set — run this inside a Claude Code session (e.g. !csr save \"note\")." >&2
+  local tool sid cwd="$PWD" note="$*" savedAt tmp tf mcwd
+  # Precedence: if both are somehow set (nested tools), prefer Claude so
+  # existing behavior stays deterministic.
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    tool="claude"; sid="$CLAUDE_CODE_SESSION_ID"
+  elif [ -n "${CODEX_THREAD_ID:-}" ]; then
+    tool="codex"; sid="$CODEX_THREAD_ID"
+    # Prefer the authoritative project dir from the rollout's session_meta;
+    # the '!' shell's PWD may differ from the Codex session cwd.
+    tf="$(_transcript "$sid" codex)"
+    if [ -n "$tf" ] && [ -f "$tf" ]; then
+      mcwd="$(head -1 "$tf" | jq -r '.payload.cwd // empty' 2>/dev/null || true)"
+      [ -n "$mcwd" ] && cwd="$mcwd"
+    fi
+  else
+    echo "csr: no Claude or Codex session detected — run inside a session (e.g. !csr save \"an optional note\")." >&2
     return 1
   fi
   savedAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -200,13 +213,13 @@ cmd_save() {
     echo "csr: could not read existing store; aborting to avoid data loss." >&2
     return 1
   fi
-  if jq -nc --arg s "$sid" --arg c "$cwd" --arg n "$note" --arg t "$savedAt" \
-       '{sessionId:$s, cwd:$c, note:$n, savedAt:$t}' >> "$tmp"; then
+  if jq -nc --arg tool "$tool" --arg s "$sid" --arg c "$cwd" --arg n "$note" --arg t "$savedAt" \
+       '{tool:$tool, sessionId:$s, cwd:$c, note:$n, savedAt:$t}' >> "$tmp"; then
     mv "$tmp" "$STORE"
   else
     rm -f "$tmp"; echo "csr: save failed; store left unchanged." >&2; return 1
   fi
-  echo "csr: saved $(basename "$cwd")  ($sid)${note:+  — $note}"
+  echo "csr: saved [$tool] $(basename "$cwd")  ($sid)${note:+  — $note}"
 }
 
 # --- the picker -------------------------------------------------------------

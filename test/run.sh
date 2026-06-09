@@ -69,5 +69,26 @@ assert_eq "__list renders legacy (no-tool) line as claude (2 claude rows)" \
 _resume_cmd_helper_check="$(_resume_cmd codex) :: $(_resume_cmd claude) :: $(_resume_cmd)"
 assert_eq "_resume_cmd dispatches" "codex resume :: claude --resume :: claude --resume" "$_resume_cmd_helper_check"
 
+# --- save: Codex via CODEX_THREAD_ID, cwd derived from the rollout meta ---
+STORE="$(mktemp)"; : > "$STORE"
+( unset CLAUDE_CODE_SESSION_ID; export CODEX_THREAD_ID="$CODEX_SID"; cmd_save "hello codex" >/dev/null )
+assert_eq "save records codex tool"   "codex"               "$(jq -r '.tool' "$STORE")"
+assert_eq "save records codex id"     "$CODEX_SID"          "$(jq -r '.sessionId' "$STORE")"
+assert_eq "save derives cwd from meta" "/tmp/proj"          "$(jq -r '.cwd' "$STORE")"
+assert_eq "save records note"         "hello codex"         "$(jq -r '.note' "$STORE")"
+
+# --- save: Claude via CLAUDE_CODE_SESSION_ID, cwd = PWD ---
+STORE="$(mktemp)"; : > "$STORE"
+( unset CODEX_THREAD_ID; export CLAUDE_CODE_SESSION_ID="$CLAUDE_SID"; cd /tmp && cmd_save >/dev/null )
+assert_eq "save records claude tool"  "claude"              "$(jq -r '.tool' "$STORE")"
+assert_eq "save records claude id"    "$CLAUDE_SID"         "$(jq -r '.sessionId' "$STORE")"
+assert_eq "save claude cwd is PWD"    "/tmp"                "$(jq -r '.cwd' "$STORE")"
+assert_eq "save empty note is empty"  ""                    "$(jq -r '.note' "$STORE")"
+
+# --- save: neither env var → error, nothing written ---
+STORE="$(mktemp)"; : > "$STORE"
+( unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID; cmd_save "x" >/dev/null 2>&1 )
+assert_eq "save with no session writes nothing" "0" "$(wc -l < "$STORE" | tr -d ' ')"
+
 echo
 if [ "$_fails" -eq 0 ]; then echo "ALL PASS"; else echo "$_fails FAILED"; exit 1; fi
