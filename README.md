@@ -41,7 +41,8 @@ csr
 ```
 
 - Fuzzy-type any part of the repo / branch / title / note.
-- **Enter** → `cd` to the project and `claude --resume` that session.
+- **Enter** → `cd` to the project and resume that session (`claude --resume` or
+  `codex resume`, depending on the saved tool).
 - **Ctrl-D** → remove the highlighted entry from the list (in place).
 - **Esc** → quit.
 
@@ -53,7 +54,8 @@ csr
   `{tool, sessionId, cwd, note, savedAt}` (`tool` is `claude` or `codex`; lines without
   it are treated as `claude`).
 - Display metadata (title, branch, last-activity) is **read live** from each session's
-  transcript under `~/.claude/projects/`, so titles stay current and the store stays tiny.
+  transcript — under `~/.claude/projects/` for Claude, `~/.codex/sessions/` for Codex —
+  so titles stay current and the store stays tiny.
 - Transcripts are located by session id (not by encoded path), so renaming a project
   directory doesn't break lookups.
 

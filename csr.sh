@@ -111,7 +111,7 @@ __list() {
     [ -z "$line" ] && continue
     sid="$(printf '%s' "$line"  | jq -r '.sessionId')"
     cwd="$(printf '%s' "$line"  | jq -r '.cwd')"
-    tool="$(printf '%s' "$line" | jq -r '.tool // "claude"')"
+    tool="$(printf '%s' "$line" | jq -r '.tool // "claude"')"; [ -z "$tool" ] && tool="claude"
     note="$(printf '%s' "$line" | jq -r '.note // ""' | _clean)"
     repo="$(basename "$cwd" | _clean)"
     tf="$(_transcript "$sid" "$tool")"

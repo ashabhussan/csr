@@ -69,6 +69,12 @@ assert_eq "__list renders legacy (no-tool) line as claude (2 claude rows)" \
 _resume_cmd_helper_check="$(_resume_cmd codex) :: $(_resume_cmd claude) :: $(_resume_cmd)"
 assert_eq "_resume_cmd dispatches" "codex resume :: claude --resume :: claude --resume" "$_resume_cmd_helper_check"
 
+# a hand-edited empty "tool" must still render as claude (jq // only covers null/missing)
+STORE_ET="$(mktemp)"
+printf '{"tool":"","sessionId":"%s","cwd":"/tmp/proj","note":"","savedAt":"x"}\n' "$CLAUDE_SID" > "$STORE_ET"
+assert_eq "__list renders empty-tool line as claude" \
+  "1" "$(STORE="$STORE_ET" __list | awk -F'\t' '$4 ~ /claude/' | wc -l | tr -d ' ')"
+
 # --- save: Codex via CODEX_THREAD_ID, cwd derived from the rollout meta ---
 STORE="$(mktemp)"; : > "$STORE"
 ( unset CLAUDE_CODE_SESSION_ID; export CODEX_THREAD_ID="$CODEX_SID"; cmd_save "hello codex" >/dev/null )
