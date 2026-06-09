@@ -136,15 +136,20 @@ __list() {
 
 # --- preview pane -----------------------------------------------------------
 __preview() {
-  local sid="$1" cwd="${2:-}" tf
-  tf="$(_transcript "$sid")"
+  local sid="$1" cwd="${2:-}" tf tool
+  # tool is not carried in the fzf row; look it up from the store by id,
+  # exactly like the note lookup below (keeps the row schema unchanged).
+  tool="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .tool // "claude"' "$STORE" 2>/dev/null | tail -1 || true)"
+  [ -z "$tool" ] && tool="claude"
+  tf="$(_transcript "$sid" "$tool")"
   # all fields below are sanitized before display: the preview pane processes
   # ANSI/escape sequences, and transcript/note text is untrusted.
   echo "session : $(printf '%s' "$sid" | _clean)"
+  echo "tool    : $tool"
   echo "cwd     : $(printf '%s' "$cwd" | _clean)"
   if [ -n "$tf" ] && [ -f "$tf" ]; then
-    echo "branch  : $(_branch "$tf" | _clean)"
-    echo "title   : $(_title "$tf" | _clean)"
+    echo "branch  : $(_branch "$tf" "$tool" | _clean)"
+    echo "title   : $(_title "$tf" "$tool" | _clean)"
     echo "updated : $(date -r "$(stat -f %m "$tf")" '+%Y-%m-%d %H:%M')"
   else
     echo "status  : ⚠ transcript not found (session may have been deleted)"
@@ -155,15 +160,22 @@ __preview() {
     [ -n "$note" ] && { echo; echo "note    : $note"; }
   fi
   echo
-  echo "resume  : cd '$(printf '%s' "$cwd" | _clean)' && claude --resume '$(printf '%s' "$sid" | _clean)'"
+  echo "resume  : cd '$(printf '%s' "$cwd" | _clean)' && $(_resume_cmd "$tool") '$(printf '%s' "$sid" | _clean)'"
   if [ -n "$tf" ] && [ -f "$tf" ]; then
     echo
     echo "── first prompt ─────────────────────────────"
-    grep -h '"type":"user"' "$tf" 2>/dev/null | head -1 | jq -r '
-      (.message.content) as $c
-      | if ($c|type)=="string" then $c
-        elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
-        else "" end // ""' 2>/dev/null | _clean_multiline | fold -s -w 56 | head -12 || true
+    if [ "$tool" = "codex" ]; then
+      grep -h '"type":"response_item"' "$tf" 2>/dev/null | jq -r '
+        select(.payload.type=="message" and .payload.role=="user")
+        | [ .payload.content[]? | (.text // "") ] | join(" ")' 2>/dev/null \
+        | grep -vE '^[[:space:]]*<' | head -1 | _clean_multiline | fold -s -w 56 | head -12 || true
+    else
+      grep -h '"type":"user"' "$tf" 2>/dev/null | head -1 | jq -r '
+        (.message.content) as $c
+        | if ($c|type)=="string" then $c
+          elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
+          else "" end // ""' 2>/dev/null | _clean_multiline | fold -s -w 56 | head -12 || true
+    fi
   fi
 }
 
@@ -231,7 +243,7 @@ cmd_pick() {
     echo "     Inside a Claude session, run:  !csr save \"a short note\""
     return 0
   fi
-  local self selfq line sid cwd tf
+  local self selfq line sid cwd tf tool
   self="$(command -v csr || echo "$SCRIPT_DIR/csr.sh")"
   selfq="$(_shquote "$self")"   # safe even if the install path has spaces/metachars
   line="$( __list | fzf \
@@ -244,16 +256,24 @@ cmd_pick() {
   )" || return 0
   [ -z "$line" ] && return 0
   sid="$(printf '%s' "$line" | cut -f2)"
-  # re-read cwd from the store by id (not the display field) so resume always
-  # uses the exact saved path, regardless of display sanitization.
+  # re-read tool + cwd from the store by id (not the display row) so resume
+  # always uses the exact saved values, regardless of display sanitization.
+  tool="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .tool // "claude"' "$STORE" 2>/dev/null | tail -1)"
+  [ -z "$tool" ] && tool="claude"
   cwd="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .cwd' "$STORE" 2>/dev/null | tail -1)"
-  tf="$(_transcript "$sid")"
+  tf="$(_transcript "$sid" "$tool")"
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
     echo "csr: transcript for $sid not found — cannot resume. (Remove it with Ctrl-D.)" >&2
     return 1
   fi
-  echo "csr: resuming in $cwd …"
-  cd "$cwd" && exec claude --resume "$sid"
+  if [ "$tool" = "codex" ]; then
+    _need codex "npm i -g @openai/codex" || return 1
+  fi
+  echo "csr: resuming [$tool] in $cwd …"
+  case "$tool" in
+    codex) cd "$cwd" && exec codex resume "$sid" ;;
+    *)     cd "$cwd" && exec claude --resume "$sid" ;;
+  esac
 }
 
 # --- dispatch ---------------------------------------------------------------

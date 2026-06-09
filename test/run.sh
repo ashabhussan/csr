@@ -90,5 +90,18 @@ STORE="$(mktemp)"; : > "$STORE"
 ( unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID; cmd_save "x" >/dev/null 2>&1 )
 assert_eq "save with no session writes nothing" "0" "$(wc -l < "$STORE" | tr -d ' ')"
 
+STORE="$(mktemp)"
+cat > "$STORE" <<EOF
+{"tool":"codex","sessionId":"$CODEX_SID","cwd":"/tmp/proj","note":"wip","savedAt":"2026-06-09T00:00:00Z"}
+EOF
+_prev="$(__preview "$CODEX_SID" "/tmp/proj")"
+
+assert_eq "preview shows tool line" \
+  "1" "$(printf '%s\n' "$_prev" | grep -c '^tool    : codex')"
+assert_eq "preview shows codex resume command" \
+  "1" "$(printf '%s\n' "$_prev" | grep -c 'codex resume')"
+assert_eq "preview shows codex branch from meta" \
+  "1" "$(printf '%s\n' "$_prev" | grep -c '^branch  : dev')"
+
 echo
 if [ "$_fails" -eq 0 ]; then echo "ALL PASS"; else echo "$_fails FAILED"; exit 1; fi
