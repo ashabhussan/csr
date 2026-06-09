@@ -50,5 +50,24 @@ assert_eq "_title codex skips <environment_context> wrapper" \
 assert_eq "_title claude prefers ai-title" \
   "Session resumer tool" "$(_title "$CLAUDE_TF" claude)"
 
+STORE="$(mktemp)"   # csr.sh reads $STORE; override it for this test
+cat > "$STORE" <<EOF
+{"tool":"codex","sessionId":"$CODEX_SID","cwd":"/tmp/proj","note":"wip","savedAt":"2026-06-09T00:00:00Z"}
+{"tool":"claude","sessionId":"$CLAUDE_SID","cwd":"/tmp/proj","note":"","savedAt":"2026-06-09T00:00:00Z"}
+{"sessionId":"$CLAUDE_SID","cwd":"/tmp/proj","note":"legacy","savedAt":"2026-06-09T00:00:00Z"}
+EOF
+
+_list_out="$(__list)"
+
+assert_eq "__list emits 4 tab-separated fields per row" \
+  "4" "$(printf '%s\n' "$_list_out" | head -1 | awk -F'\t' '{print NF}')"
+assert_eq "__list shows full-word codex tag in DISPLAY field" \
+  "1" "$(printf '%s\n' "$_list_out" | awk -F'\t' '$4 ~ /codex/' | wc -l | tr -d ' ')"
+assert_eq "__list renders legacy (no-tool) line as claude (2 claude rows)" \
+  "2" "$(printf '%s\n' "$_list_out" | awk -F'\t' '$4 ~ /claude/' | wc -l | tr -d ' ')"
+
+_resume_cmd_helper_check="$(_resume_cmd codex) :: $(_resume_cmd claude) :: $(_resume_cmd)"
+assert_eq "_resume_cmd dispatches" "codex resume :: claude --resume :: claude --resume" "$_resume_cmd_helper_check"
+
 echo
 if [ "$_fails" -eq 0 ]; then echo "ALL PASS"; else echo "$_fails FAILED"; exit 1; fi

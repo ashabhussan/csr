@@ -99,30 +99,36 @@ _clean_multiline() { LC_ALL=C tr '\t\r' '  ' | LC_ALL=C tr -d '\000-\011\013-\03
 # POSIX single-quote a string for safe embedding in an fzf shell template
 _shquote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
+# resume command for a tool (data-only; tool is the trusted store field)
+_resume_cmd() { case "${1:-claude}" in codex) printf 'codex resume' ;; *) printf 'claude --resume' ;; esac; }
+
 # --- build the fzf list (tab-separated; only DISPLAY field is shown) --------
 # fields: epoch \t sessionId \t cwd \t DISPLAY
 __list() {
   [ -f "$STORE" ] || return 0
-  local line sid cwd note tf epoch rel repo branch title disp
+  local line sid cwd tool note tf epoch rel repo branch title disp
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     sid="$(printf '%s' "$line"  | jq -r '.sessionId')"
     cwd="$(printf '%s' "$line"  | jq -r '.cwd')"
+    tool="$(printf '%s' "$line" | jq -r '.tool // "claude"')"
     note="$(printf '%s' "$line" | jq -r '.note // ""' | _clean)"
     repo="$(basename "$cwd" | _clean)"
-    tf="$(_transcript "$sid")"
+    tf="$(_transcript "$sid" "$tool")"
     if [ -n "$tf" ] && [ -f "$tf" ]; then
       epoch="$(stat -f %m "$tf" 2>/dev/null || echo 0)"
       rel="$(_reltime "$epoch")"
-      branch="$(_branch "$tf" | _clean)"; [ -z "$branch" ] && branch="-"
-      title="$(_title "$tf" | _clean)"
+      branch="$(_branch "$tf" "$tool" | _clean)"; [ -z "$branch" ] && branch="-"
+      title="$(_title "$tf" "$tool" | _clean)"
     else
       epoch=0; rel="⚠"; branch="-"; title="(missing transcript)"
     fi
-    disp="$(printf '%4s  %-16s %-14s %-38s %s' \
-      "$rel" "$(_truncate "$repo" 16)" "$(_truncate "$branch" 14)" \
+    # tag is the trusted .tool value (claude|codex); spelled in full so the
+    # fzf search (restricted to this DISPLAY field) matches a typed "codex".
+    disp="$(printf '%4s  %-7s %-16s %-14s %-38s %s' \
+      "$rel" "$tool" "$(_truncate "$repo" 16)" "$(_truncate "$branch" 14)" \
       "$(_truncate "$title" 38)" "$([ -n "$note" ] && printf '· %s' "$note")")"
-    # cwd is for display only here (resume re-reads it from the store by id);
+    # cwd is display-only here (resume re-reads it from the store by id);
     # _clean guarantees the row stays single-line and tab-delimited.
     printf '%s\t%s\t%s\t%s\n' "$epoch" "$(printf '%s' "$sid" | _clean)" "$(printf '%s' "$cwd" | _clean)" "$disp"
   done < "$STORE" | sort -t$'\t' -k1,1 -rn
