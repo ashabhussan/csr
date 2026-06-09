@@ -37,5 +37,18 @@ assert_eq "_transcript locates claude transcript by id" \
   "$CSR_CLAUDE_DIR/-tmp-proj/$CLAUDE_SID.jsonl" \
   "$(_transcript "$CLAUDE_SID" claude)"
 
+CODEX_TF="$(_transcript "$CODEX_SID" codex)"
+CLAUDE_TF="$(_transcript "$CLAUDE_SID" claude)"
+
+assert_eq "_branch reads codex git.branch from session_meta" \
+  "dev" "$(_branch "$CODEX_TF" codex)"
+assert_eq "_branch reads claude gitBranch" \
+  "main" "$(_branch "$CLAUDE_TF" claude)"
+
+assert_eq "_title codex skips <environment_context> wrapper" \
+  "Add codex support to csr" "$(_title "$CODEX_TF" codex)"
+assert_eq "_title claude prefers ai-title" \
+  "Session resumer tool" "$(_title "$CLAUDE_TF" claude)"
+
 echo
 if [ "$_fails" -eq 0 ]; then echo "ALL PASS"; else echo "$_fails FAILED"; exit 1; fi

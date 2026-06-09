@@ -48,22 +48,39 @@ _reltime() {
 }
 
 # --- title for a transcript: ai-title, else first prompt, else fallback -----
+# Codex has no ai-title; the first real user prompt is found by skipping the
+# developer/instruction wrappers and the <environment_context> user message
+# (any user message whose joined text begins with '<').
 _title() {
-  local tf="$1" t
-  t="$(grep -h '"type":"ai-title"' "$tf" 2>/dev/null | tail -1 | jq -r '.aiTitle // empty' 2>/dev/null || true)"
-  if [ -z "$t" ]; then
-    t="$(grep -h '"type":"user"' "$tf" 2>/dev/null | head -1 | jq -r '
-      (.message.content) as $c
-      | if ($c|type)=="string" then $c
-        elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
-        else "" end // empty' 2>/dev/null || true)"
-  fi
+  local tf="$1" tool="${2:-claude}" t
+  case "$tool" in
+    codex)
+      t="$(grep -h '"type":"response_item"' "$tf" 2>/dev/null | jq -r '
+        select(.payload.type=="message" and .payload.role=="user")
+        | [ .payload.content[]? | (.text // "") ] | join(" ")' 2>/dev/null \
+        | grep -vE '^[[:space:]]*<' | head -1 || true)"
+      ;;
+    *)
+      t="$(grep -h '"type":"ai-title"' "$tf" 2>/dev/null | tail -1 | jq -r '.aiTitle // empty' 2>/dev/null || true)"
+      if [ -z "$t" ]; then
+        t="$(grep -h '"type":"user"' "$tf" 2>/dev/null | head -1 | jq -r '
+          (.message.content) as $c
+          | if ($c|type)=="string" then $c
+            elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
+            else "" end // empty' 2>/dev/null || true)"
+      fi
+      ;;
+  esac
   [ -z "$t" ] && t="(untitled)"
   printf '%s' "$t" | tr '\n' ' '
 }
 
 _branch() {
-  grep -h '"gitBranch"' "$1" 2>/dev/null | tail -1 | jq -r '.gitBranch // empty' 2>/dev/null || true
+  local tf="$1" tool="${2:-claude}"
+  case "$tool" in
+    codex) head -1 "$tf" 2>/dev/null | jq -r '.payload.git.branch // empty' 2>/dev/null || true ;;
+    *)     grep -h '"gitBranch"' "$tf" 2>/dev/null | tail -1 | jq -r '.gitBranch // empty' 2>/dev/null || true ;;
+  esac
 }
 
 _truncate() { # text width
