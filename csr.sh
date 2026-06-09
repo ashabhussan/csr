@@ -20,7 +20,8 @@ while [ -h "$_src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 STORE="$SCRIPT_DIR/csr-sessions.jsonl"
-PROJECTS_DIR="$HOME/.claude/projects"
+PROJECTS_DIR="${CSR_CLAUDE_DIR:-$HOME/.claude/projects}"
+CODEX_DIR="${CSR_CODEX_DIR:-$HOME/.codex/sessions}"
 
 # --- dependency check -------------------------------------------------------
 _need() { command -v "$1" >/dev/null 2>&1 || { echo "csr: missing dependency '$1' ($2)" >&2; return 1; }; }
@@ -230,4 +231,5 @@ main() {
   esac
 }
 
-main "$@"
+# Run only when executed directly, not when sourced (e.g. by test/run.sh).
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] || main "$@"
