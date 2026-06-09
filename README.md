@@ -1,7 +1,8 @@
-# csr — Claude Session Resume
+# csr — Claude/Codex Session Resume
 
-A curated, terminal bookmark list for Claude Code sessions. No browser, no server.
-Save the sessions worth returning to, then fuzzy-pick one and resume it instantly.
+A curated, terminal bookmark list for Claude Code and Codex CLI sessions. No browser,
+no server. Save the sessions worth returning to, then fuzzy-pick one and resume it
+instantly.
 
 ## Install
 
