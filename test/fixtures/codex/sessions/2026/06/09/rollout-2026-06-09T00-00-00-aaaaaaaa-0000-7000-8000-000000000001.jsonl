@@ -1,0 +1,4 @@
+{"type":"session_meta","payload":{"id":"aaaaaaaa-0000-7000-8000-000000000001","cwd":"/tmp/proj","git":{"branch":"dev"},"cli_version":"0.138.0"}}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>\n...sandbox...\n</permissions instructions>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/tmp/proj</cwd>\n</environment_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add codex support to csr"}]}}

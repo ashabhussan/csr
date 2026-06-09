@@ -4,7 +4,7 @@
 # A curated, terminal bookmark list for Claude Code sessions.
 #
 #   csr            pick a saved session and resume it (fzf; Ctrl-D removes)
-#   csr save [note]  save the CURRENT session  (run inside Claude as: !csr save "note")
+#   csr save [optional note]  save the CURRENT session (run inside Claude/Codex as: !csr save "note")
 #
 # Store lives next to this script as csr-sessions.jsonl (one JSON object per line).
 # See docs/superpowers/specs/2026-06-08-csr-claude-session-resume-design.md
@@ -20,15 +20,23 @@ while [ -h "$_src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 STORE="$SCRIPT_DIR/csr-sessions.jsonl"
-PROJECTS_DIR="$HOME/.claude/projects"
+PROJECTS_DIR="${CSR_CLAUDE_DIR:-$HOME/.claude/projects}"
+CODEX_DIR="${CSR_CODEX_DIR:-$HOME/.codex/sessions}"
 
 # --- dependency check -------------------------------------------------------
 _need() { command -v "$1" >/dev/null 2>&1 || { echo "csr: missing dependency '$1' ($2)" >&2; return 1; }; }
 
 # --- find a session transcript by id (encoding-independent) -----------------
 _transcript() {
-  local sid="$1"
-  find "$PROJECTS_DIR" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -1
+  local sid="$1" tool="${2:-claude}"
+  # `|| true`: a missing sessions dir makes find exit 1, which under
+  # `set -euo pipefail` would abort callers (save/list) instead of letting
+  # them take the empty/missing-transcript path. Treat any find failure as
+  # "not found".
+  case "$tool" in
+    codex) find "$CODEX_DIR"    -maxdepth 4 -name "rollout-*-$sid.jsonl" 2>/dev/null | head -1 || true ;;
+    *)     find "$PROJECTS_DIR" -maxdepth 2 -name "$sid.jsonl"           2>/dev/null | head -1 || true ;;
+  esac
 }
 
 # --- human-friendly relative time from an epoch -----------------------------
@@ -44,22 +52,39 @@ _reltime() {
 }
 
 # --- title for a transcript: ai-title, else first prompt, else fallback -----
+# Codex has no ai-title; the first real user prompt is found by skipping the
+# developer/instruction wrappers and the <environment_context> user message
+# (any user message whose joined text begins with '<').
 _title() {
-  local tf="$1" t
-  t="$(grep -h '"type":"ai-title"' "$tf" 2>/dev/null | tail -1 | jq -r '.aiTitle // empty' 2>/dev/null || true)"
-  if [ -z "$t" ]; then
-    t="$(grep -h '"type":"user"' "$tf" 2>/dev/null | head -1 | jq -r '
-      (.message.content) as $c
-      | if ($c|type)=="string" then $c
-        elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
-        else "" end // empty' 2>/dev/null || true)"
-  fi
+  local tf="$1" tool="${2:-claude}" t
+  case "$tool" in
+    codex)
+      t="$(grep -h '"type":"response_item"' "$tf" 2>/dev/null | jq -r '
+        select(.payload.type=="message" and .payload.role=="user")
+        | [ .payload.content[]? | (.text // "") ] | join(" ")' 2>/dev/null \
+        | grep -vE '^[[:space:]]*<' | head -1 || true)"
+      ;;
+    *)
+      t="$(grep -h '"type":"ai-title"' "$tf" 2>/dev/null | tail -1 | jq -r '.aiTitle // empty' 2>/dev/null || true)"
+      if [ -z "$t" ]; then
+        t="$(grep -h '"type":"user"' "$tf" 2>/dev/null | head -1 | jq -r '
+          (.message.content) as $c
+          | if ($c|type)=="string" then $c
+            elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
+            else "" end // empty' 2>/dev/null || true)"
+      fi
+      ;;
+  esac
   [ -z "$t" ] && t="(untitled)"
   printf '%s' "$t" | tr '\n' ' '
 }
 
 _branch() {
-  grep -h '"gitBranch"' "$1" 2>/dev/null | tail -1 | jq -r '.gitBranch // empty' 2>/dev/null || true
+  local tf="$1" tool="${2:-claude}"
+  case "$tool" in
+    codex) head -1 "$tf" 2>/dev/null | jq -r '.payload.git.branch // empty' 2>/dev/null || true ;;
+    *)     grep -h '"gitBranch"' "$tf" 2>/dev/null | tail -1 | jq -r '.gitBranch // empty' 2>/dev/null || true ;;
+  esac
 }
 
 _truncate() { # text width
@@ -78,30 +103,43 @@ _clean_multiline() { LC_ALL=C tr '\t\r' '  ' | LC_ALL=C tr -d '\000-\011\013-\03
 # POSIX single-quote a string for safe embedding in an fzf shell template
 _shquote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
+# normalize an untrusted store .tool value to exactly "claude" or "codex".
+# .tool is the one rendered field not produced by us (a hand-edited/corrupted
+# store could carry tabs/newlines/ESC), so collapse anything that isn't exactly
+# "codex" to "claude" — this validates AND sanitizes (output is a fixed literal,
+# never raw store bytes) before the value reaches any display row.
+_tool() { case "$1" in codex) printf 'codex' ;; *) printf 'claude' ;; esac; }
+
+# resume command for a tool (data-only; tool already normalized via _tool)
+_resume_cmd() { case "${1:-claude}" in codex) printf 'codex resume' ;; *) printf 'claude --resume' ;; esac; }
+
 # --- build the fzf list (tab-separated; only DISPLAY field is shown) --------
 # fields: epoch \t sessionId \t cwd \t DISPLAY
 __list() {
   [ -f "$STORE" ] || return 0
-  local line sid cwd note tf epoch rel repo branch title disp
+  local line sid cwd tool note tf epoch rel repo branch title disp
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     sid="$(printf '%s' "$line"  | jq -r '.sessionId')"
     cwd="$(printf '%s' "$line"  | jq -r '.cwd')"
+    tool="$(_tool "$(printf '%s' "$line" | jq -r '.tool // empty')")"
     note="$(printf '%s' "$line" | jq -r '.note // ""' | _clean)"
     repo="$(basename "$cwd" | _clean)"
-    tf="$(_transcript "$sid")"
+    tf="$(_transcript "$sid" "$tool")"
     if [ -n "$tf" ] && [ -f "$tf" ]; then
       epoch="$(stat -f %m "$tf" 2>/dev/null || echo 0)"
       rel="$(_reltime "$epoch")"
-      branch="$(_branch "$tf" | _clean)"; [ -z "$branch" ] && branch="-"
-      title="$(_title "$tf" | _clean)"
+      branch="$(_branch "$tf" "$tool" | _clean)"; [ -z "$branch" ] && branch="-"
+      title="$(_title "$tf" "$tool" | _clean)"
     else
       epoch=0; rel="⚠"; branch="-"; title="(missing transcript)"
     fi
-    disp="$(printf '%4s  %-16s %-14s %-38s %s' \
-      "$rel" "$(_truncate "$repo" 16)" "$(_truncate "$branch" 14)" \
+    # tag is the trusted .tool value (claude|codex); spelled in full so the
+    # fzf search (restricted to this DISPLAY field) matches a typed "codex".
+    disp="$(printf '%4s  %-7s %-16s %-14s %-38s %s' \
+      "$rel" "$tool" "$(_truncate "$repo" 16)" "$(_truncate "$branch" 14)" \
       "$(_truncate "$title" 38)" "$([ -n "$note" ] && printf '· %s' "$note")")"
-    # cwd is for display only here (resume re-reads it from the store by id);
+    # cwd is display-only here (resume re-reads it from the store by id);
     # _clean guarantees the row stays single-line and tab-delimited.
     printf '%s\t%s\t%s\t%s\n' "$epoch" "$(printf '%s' "$sid" | _clean)" "$(printf '%s' "$cwd" | _clean)" "$disp"
   done < "$STORE" | sort -t$'\t' -k1,1 -rn
@@ -109,15 +147,19 @@ __list() {
 
 # --- preview pane -----------------------------------------------------------
 __preview() {
-  local sid="$1" cwd="${2:-}" tf
-  tf="$(_transcript "$sid")"
+  local sid="$1" cwd="${2:-}" tf tool
+  # tool is not carried in the fzf row; look it up from the store by id,
+  # exactly like the note lookup below (keeps the row schema unchanged).
+  tool="$(_tool "$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .tool // empty' "$STORE" 2>/dev/null | tail -1 || true)")"
+  tf="$(_transcript "$sid" "$tool")"
   # all fields below are sanitized before display: the preview pane processes
   # ANSI/escape sequences, and transcript/note text is untrusted.
   echo "session : $(printf '%s' "$sid" | _clean)"
+  echo "tool    : $tool"
   echo "cwd     : $(printf '%s' "$cwd" | _clean)"
   if [ -n "$tf" ] && [ -f "$tf" ]; then
-    echo "branch  : $(_branch "$tf" | _clean)"
-    echo "title   : $(_title "$tf" | _clean)"
+    echo "branch  : $(_branch "$tf" "$tool" | _clean)"
+    echo "title   : $(_title "$tf" "$tool" | _clean)"
     echo "updated : $(date -r "$(stat -f %m "$tf")" '+%Y-%m-%d %H:%M')"
   else
     echo "status  : ⚠ transcript not found (session may have been deleted)"
@@ -128,15 +170,22 @@ __preview() {
     [ -n "$note" ] && { echo; echo "note    : $note"; }
   fi
   echo
-  echo "resume  : cd '$(printf '%s' "$cwd" | _clean)' && claude --resume '$(printf '%s' "$sid" | _clean)'"
+  echo "resume  : cd '$(printf '%s' "$cwd" | _clean)' && $(_resume_cmd "$tool") '$(printf '%s' "$sid" | _clean)'"
   if [ -n "$tf" ] && [ -f "$tf" ]; then
     echo
     echo "── first prompt ─────────────────────────────"
-    grep -h '"type":"user"' "$tf" 2>/dev/null | head -1 | jq -r '
-      (.message.content) as $c
-      | if ($c|type)=="string" then $c
-        elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
-        else "" end // ""' 2>/dev/null | _clean_multiline | fold -s -w 56 | head -12 || true
+    if [ "$tool" = "codex" ]; then
+      grep -h '"type":"response_item"' "$tf" 2>/dev/null | jq -r '
+        select(.payload.type=="message" and .payload.role=="user")
+        | [ .payload.content[]? | (.text // "") ] | join(" ")' 2>/dev/null \
+        | grep -vE '^[[:space:]]*<' | head -1 | _clean_multiline | fold -s -w 56 | head -12 || true
+    else
+      grep -h '"type":"user"' "$tf" 2>/dev/null | head -1 | jq -r '
+        (.message.content) as $c
+        | if ($c|type)=="string" then $c
+          elif ($c|type)=="array" then ([ $c[] | if type=="string" then . else (.text // "") end ] | join(" "))
+          else "" end // ""' 2>/dev/null | _clean_multiline | fold -s -w 56 | head -12 || true
+    fi
   fi
 }
 
@@ -156,12 +205,25 @@ __remove() {
   fi
 }
 
-# --- save the current session -----------------------------------------------
+# --- save the current session (auto-detects Claude vs Codex from env) -------
 cmd_save() {
   _need jq "brew install jq" || return 1
-  local sid="${CLAUDE_CODE_SESSION_ID:-}" cwd="$PWD" note="$*" savedAt tmp
-  if [ -z "$sid" ]; then
-    echo "csr: CLAUDE_CODE_SESSION_ID is not set — run this inside a Claude Code session (e.g. !csr save \"note\")." >&2
+  local tool sid cwd="$PWD" note="$*" savedAt tmp tf mcwd
+  # Precedence: if both are somehow set (nested tools), prefer Claude so
+  # existing behavior stays deterministic.
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    tool="claude"; sid="$CLAUDE_CODE_SESSION_ID"
+  elif [ -n "${CODEX_THREAD_ID:-}" ]; then
+    tool="codex"; sid="$CODEX_THREAD_ID"
+    # Prefer the authoritative project dir from the rollout's session_meta;
+    # the '!' shell's PWD may differ from the Codex session cwd.
+    tf="$(_transcript "$sid" codex)"
+    if [ -n "$tf" ] && [ -f "$tf" ]; then
+      mcwd="$(head -1 "$tf" | jq -r '.payload.cwd // empty' 2>/dev/null || true)"
+      [ -n "$mcwd" ] && cwd="$mcwd"
+    fi
+  else
+    echo "csr: no Claude or Codex session detected — run inside a session (e.g. !csr save \"an optional note\")." >&2
     return 1
   fi
   savedAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -173,13 +235,13 @@ cmd_save() {
     echo "csr: could not read existing store; aborting to avoid data loss." >&2
     return 1
   fi
-  if jq -nc --arg s "$sid" --arg c "$cwd" --arg n "$note" --arg t "$savedAt" \
-       '{sessionId:$s, cwd:$c, note:$n, savedAt:$t}' >> "$tmp"; then
+  if jq -nc --arg tool "$tool" --arg s "$sid" --arg c "$cwd" --arg n "$note" --arg t "$savedAt" \
+       '{tool:$tool, sessionId:$s, cwd:$c, note:$n, savedAt:$t}' >> "$tmp"; then
     mv "$tmp" "$STORE"
   else
     rm -f "$tmp"; echo "csr: save failed; store left unchanged." >&2; return 1
   fi
-  echo "csr: saved $(basename "$cwd")  ($sid)${note:+  — $note}"
+  echo "csr: saved [$tool] $(basename "$cwd")  ($sid)${note:+  — $note}"
 }
 
 # --- the picker -------------------------------------------------------------
@@ -188,10 +250,10 @@ cmd_pick() {
   _need jq  "brew install jq"  || return 1
   if [ ! -s "$STORE" ]; then
     echo "csr: no saved sessions yet."
-    echo "     Inside a Claude session, run:  !csr save \"a short note\""
+    echo "     Inside a Claude or Codex session, run:  !csr save \"an optional short note\""
     return 0
   fi
-  local self selfq line sid cwd tf
+  local self selfq line sid cwd tf tool
   self="$(command -v csr || echo "$SCRIPT_DIR/csr.sh")"
   selfq="$(_shquote "$self")"   # safe even if the install path has spaces/metachars
   line="$( __list | fzf \
@@ -204,16 +266,23 @@ cmd_pick() {
   )" || return 0
   [ -z "$line" ] && return 0
   sid="$(printf '%s' "$line" | cut -f2)"
-  # re-read cwd from the store by id (not the display field) so resume always
-  # uses the exact saved path, regardless of display sanitization.
+  # re-read tool + cwd from the store by id (not the display row) so resume
+  # always uses the exact saved values, regardless of display sanitization.
+  tool="$(_tool "$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .tool // empty' "$STORE" 2>/dev/null | tail -1)")"
   cwd="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .cwd' "$STORE" 2>/dev/null | tail -1)"
-  tf="$(_transcript "$sid")"
+  tf="$(_transcript "$sid" "$tool")"
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
     echo "csr: transcript for $sid not found — cannot resume. (Remove it with Ctrl-D.)" >&2
     return 1
   fi
-  echo "csr: resuming in $cwd …"
-  cd "$cwd" && exec claude --resume "$sid"
+  if [ "$tool" = "codex" ]; then
+    _need codex "npm i -g @openai/codex" || return 1
+  fi
+  echo "csr: resuming [$tool] in $cwd …"
+  case "$tool" in
+    codex) cd "$cwd" && exec codex resume "$sid" ;;
+    *)     cd "$cwd" && exec claude --resume "$sid" ;;
+  esac
 }
 
 # --- dispatch ---------------------------------------------------------------
@@ -230,4 +299,5 @@ main() {
   esac
 }
 
-main "$@"
+# Run only when executed directly, not when sourced (e.g. by test/run.sh).
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] || main "$@"
