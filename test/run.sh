@@ -75,6 +75,26 @@ printf '{"tool":"","sessionId":"%s","cwd":"/tmp/proj","note":"","savedAt":"x"}\n
 assert_eq "__list renders empty-tool line as claude" \
   "1" "$(STORE="$STORE_ET" __list | awk -F'\t' '$4 ~ /claude/' | wc -l | tr -d ' ')"
 
+# _transcript must not propagate a missing-sessions-dir failure (exit 1 under
+# set -euo pipefail would abort save/list before their not-found fallback).
+assert_eq "_transcript exits 0 when codex dir missing" \
+  "0" "$( ( CODEX_DIR=/nonexistent/x;    _transcript zzz codex  >/dev/null 2>&1; echo $? ) )"
+assert_eq "_transcript exits 0 when claude dir missing" \
+  "0" "$( ( PROJECTS_DIR=/nonexistent/y; _transcript zzz claude >/dev/null 2>&1; echo $? ) )"
+
+# an untrusted/corrupted "tool" with a tab + ESC must neither split the tab-delimited
+# row nor leak raw control bytes into the rendered DISPLAY (must normalize to claude).
+STORE_MAL="$(mktemp)"
+jq -nc "{tool:\"codex\t[31mX\", sessionId:\"$CODEX_SID\", cwd:\"/tmp/proj\", note:\"n\", savedAt:\"x\"}" > "$STORE_MAL"
+_mal_out="$(STORE="$STORE_MAL" __list)"
+assert_eq "malicious tool keeps row at 4 fields" \
+  "4" "$(printf '%s\n' "$_mal_out" | head -1 | awk -F'\t' '{print NF}')"
+assert_eq "malicious tool normalized to claude tag" \
+  "1" "$(printf '%s\n' "$_mal_out" | awk -F'\t' '$4 ~ /claude/' | wc -l | tr -d ' ')"
+assert_eq "malicious tool leaves no control bytes in DISPLAY" \
+  "$(printf '%s\n' "$_mal_out" | head -1 | cut -f4)" \
+  "$(printf '%s\n' "$_mal_out" | head -1 | cut -f4 | LC_ALL=C tr -d '[:cntrl:]')"
+
 # --- save: Codex via CODEX_THREAD_ID, cwd derived from the rollout meta ---
 STORE="$(mktemp)"; : > "$STORE"
 ( unset CLAUDE_CODE_SESSION_ID; export CODEX_THREAD_ID="$CODEX_SID"; cmd_save "hello codex" >/dev/null )

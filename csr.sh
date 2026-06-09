@@ -29,9 +29,13 @@ _need() { command -v "$1" >/dev/null 2>&1 || { echo "csr: missing dependency '$1
 # --- find a session transcript by id (encoding-independent) -----------------
 _transcript() {
   local sid="$1" tool="${2:-claude}"
+  # `|| true`: a missing sessions dir makes find exit 1, which under
+  # `set -euo pipefail` would abort callers (save/list) instead of letting
+  # them take the empty/missing-transcript path. Treat any find failure as
+  # "not found".
   case "$tool" in
-    codex) find "$CODEX_DIR"    -maxdepth 4 -name "rollout-*-$sid.jsonl" 2>/dev/null | head -1 ;;
-    *)     find "$PROJECTS_DIR" -maxdepth 2 -name "$sid.jsonl"           2>/dev/null | head -1 ;;
+    codex) find "$CODEX_DIR"    -maxdepth 4 -name "rollout-*-$sid.jsonl" 2>/dev/null | head -1 || true ;;
+    *)     find "$PROJECTS_DIR" -maxdepth 2 -name "$sid.jsonl"           2>/dev/null | head -1 || true ;;
   esac
 }
 
@@ -99,7 +103,14 @@ _clean_multiline() { LC_ALL=C tr '\t\r' '  ' | LC_ALL=C tr -d '\000-\011\013-\03
 # POSIX single-quote a string for safe embedding in an fzf shell template
 _shquote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-# resume command for a tool (data-only; tool is the trusted store field)
+# normalize an untrusted store .tool value to exactly "claude" or "codex".
+# .tool is the one rendered field not produced by us (a hand-edited/corrupted
+# store could carry tabs/newlines/ESC), so collapse anything that isn't exactly
+# "codex" to "claude" — this validates AND sanitizes (output is a fixed literal,
+# never raw store bytes) before the value reaches any display row.
+_tool() { case "$1" in codex) printf 'codex' ;; *) printf 'claude' ;; esac; }
+
+# resume command for a tool (data-only; tool already normalized via _tool)
 _resume_cmd() { case "${1:-claude}" in codex) printf 'codex resume' ;; *) printf 'claude --resume' ;; esac; }
 
 # --- build the fzf list (tab-separated; only DISPLAY field is shown) --------
@@ -111,7 +122,7 @@ __list() {
     [ -z "$line" ] && continue
     sid="$(printf '%s' "$line"  | jq -r '.sessionId')"
     cwd="$(printf '%s' "$line"  | jq -r '.cwd')"
-    tool="$(printf '%s' "$line" | jq -r '.tool // "claude"')"; [ -z "$tool" ] && tool="claude"
+    tool="$(_tool "$(printf '%s' "$line" | jq -r '.tool // empty')")"
     note="$(printf '%s' "$line" | jq -r '.note // ""' | _clean)"
     repo="$(basename "$cwd" | _clean)"
     tf="$(_transcript "$sid" "$tool")"
@@ -139,8 +150,7 @@ __preview() {
   local sid="$1" cwd="${2:-}" tf tool
   # tool is not carried in the fzf row; look it up from the store by id,
   # exactly like the note lookup below (keeps the row schema unchanged).
-  tool="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .tool // "claude"' "$STORE" 2>/dev/null | tail -1 || true)"
-  [ -z "$tool" ] && tool="claude"
+  tool="$(_tool "$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .tool // empty' "$STORE" 2>/dev/null | tail -1 || true)")"
   tf="$(_transcript "$sid" "$tool")"
   # all fields below are sanitized before display: the preview pane processes
   # ANSI/escape sequences, and transcript/note text is untrusted.
@@ -258,8 +268,7 @@ cmd_pick() {
   sid="$(printf '%s' "$line" | cut -f2)"
   # re-read tool + cwd from the store by id (not the display row) so resume
   # always uses the exact saved values, regardless of display sanitization.
-  tool="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .tool // "claude"' "$STORE" 2>/dev/null | tail -1)"
-  [ -z "$tool" ] && tool="claude"
+  tool="$(_tool "$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .tool // empty' "$STORE" 2>/dev/null | tail -1)")"
   cwd="$(jq -r --arg s "$sid" 'select(.sessionId==$s) | .cwd' "$STORE" 2>/dev/null | tail -1)"
   tf="$(_transcript "$sid" "$tool")"
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
